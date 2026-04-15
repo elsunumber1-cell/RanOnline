@@ -1,0 +1,246 @@
+# ======================================================
+# RAN Online Developer Launcher
+# สกริปต์สำหรับเซตอัป RAN Online โดยอัตโนมัติ
+# ======================================================
+
+param(
+    [switch]$SkipClone = $false,
+    [switch]$SkipBuild = $false,
+    [switch]$ServerOnly = $false,
+    [switch]$ClientOnly = $false,
+    [string]$Branch = "master"
+)
+
+# สีสำหรับการแสดงผล
+$COLOR_INFO = "Cyan"
+$COLOR_SUCCESS = "Green"
+$COLOR_ERROR = "Red"
+$COLOR_WARNING = "Yellow"
+
+# ฟังก์ชันสำหรับแสดงข้อความ
+function Write-Info { Write-Host "[INFO] $args" -ForegroundColor $COLOR_INFO }
+function Write-Success { Write-Host "[SUCCESS] $args" -ForegroundColor $COLOR_SUCCESS }
+function Write-Error-Custom { Write-Host "[ERROR] $args" -ForegroundColor $COLOR_ERROR }
+function Write-Warning-Custom { Write-Host "[WARNING] $args" -ForegroundColor $COLOR_WARNING }
+
+# ตั้งค่า
+$REPO_URL = "https://github.com/elsunumber1-cell/RanOnline.git"
+$REPO_DIR = "RanOnline"
+$LOG_DIR = "Logs"
+$TIMESTAMP = Get-Date -Format "yyyyMMdd_HHmmss"
+$LOG_FILE = "$LOG_DIR/launcher_$TIMESTAMP.log"
+
+Write-Info "=========================================="
+Write-Info "RAN Online Developer Launcher"
+Write-Info "=========================================="
+
+# ===== STEP 1: Clone Repository =====
+if (-not $SkipClone) {
+    Write-Info "STEP 1: Cloning Repository..."
+    
+    if (Test-Path $REPO_DIR) {
+        Write-Warning-Custom "Repository folder already exists, skipping clone"
+    } else {
+        try {
+            git clone --branch $Branch $REPO_URL $REPO_DIR
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Repository cloned successfully"
+            } else {
+                Write-Error-Custom "Failed to clone repository"
+                exit 1
+            }
+        } catch {
+            Write-Error-Custom "Git clone error: $_"
+            exit 1
+        }
+    }
+} else {
+    Write-Info "STEP 1: Skipped (using existing code)"
+}
+
+# เข้าไปในโฟลเดอร์ repository
+Set-Location $REPO_DIR
+
+# สร้างโฟลเดอร์ Logs
+if (-not (Test-Path $LOG_DIR)) {
+    New-Item -ItemType Directory -Path $LOG_DIR | Out-Null
+    Write-Info "Created Logs directory"
+}
+
+# ===== STEP 2: Initialize Database =====
+Write-Info "STEP 2: Initializing Database..."
+
+# ตรวจสอบว่า MySQL installed หรือไม่
+$MySQLPath = "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe"
+if (-not (Test-Path $MySQLPath)) {
+    $MySQLPath = "C:\Program Files (x86)\MySQL\MySQL Server 8.0\bin\mysql.exe"
+}
+
+if (Test-Path $MySQLPath) {
+    Write-Info "MySQL found at: $MySQLPath"
+    
+    # ตรวจสอบว่า db_init_dev.sql มีอยู่
+    if (Test-Path "Tools/db_init_dev.sql") {
+        Write-Info "Initializing database..."
+        
+        # รันคำสั่ง MySQL
+        & $MySQLPath -u root -proot < Tools/db_init_dev.sql 2>>$LOG_FILE
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Database initialized"
+        } else {
+            Write-Warning-Custom "Database initialization may have failed - check $LOG_FILE"
+        }
+    } else {
+        Write-Warning-Custom "db_init_dev.sql not found, skipping database setup"
+    }
+} else {
+    Write-Warning-Custom "MySQL not found - manual database setup required"
+    Write-Info "Please run: mysql -u root -p < Tools/db_init_dev.sql"
+}
+
+# ===== STEP 3: Build Project =====
+if (-not $SkipBuild -and -not $ClientOnly) {
+    Write-Info "STEP 3: Building Project..."
+    
+    if (Test-Path "RanOnline.sln") {
+        Write-Info "Found RanOnline.sln, building with Visual Studio..."
+        
+        $VSPath = "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+        if (-not (Test-Path $VSPath)) {
+            $VSPath = "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe"
+        }
+        
+        if (Test-Path $VSPath) {
+            Write-Info "Building Release configuration..."
+            & $VSPath "RanOnline.sln" /p:Configuration=Release /p:Platform=Win32 /m /t:Build 2>&1 | Tee-Object -FilePath "$LOG_DIR/build_$TIMESTAMP.log"
+            
+            if ($LASTEXITCODE -eq 0) {
+                Write-Success "Build completed successfully"
+            } else {
+                Write-Warning-Custom "Build may have failed - check $LOG_DIR/build_$TIMESTAMP.log"
+            }
+        } else {
+            Write-Error-Custom "Visual Studio not found"
+            Write-Info "Please install Visual Studio 2022 Community or later"
+        }
+    } else {
+        Write-Warning-Custom "RanOnline.sln not found"
+    }
+} else {
+    Write-Info "STEP 3: Build skipped (using existing binaries)"
+}
+
+# ===== STEP 4: Configuration =====
+Write-Info "STEP 4: Setting up Configuration..."
+
+if (-not (Test-Path "Config")) {
+    New-Item -ItemType Directory -Path "Config" | Out-Null
+    Write-Info "Created Config directory"
+}
+
+# สร้าง DBConfig_dev.ini
+$DBConfig = @"
+[Database]
+Host=127.0.0.1
+Port=3306
+Username=ran_dev
+Password=dev_password_123
+Database=ran_game_dev
+"@
+
+if (-not (Test-Path "Config/DBConfig_dev.ini")) {
+    $DBConfig | Out-File -FilePath "Config/DBConfig_dev.ini" -Encoding UTF8
+    Write-Success "Created DBConfig_dev.ini"
+} else {
+    Write-Info "DBConfig_dev.ini already exists"
+}
+
+# สร้าง serverinfo_dev.xml
+$ServerInfo = @"
+<?xml version="1.0" encoding="utf-8"?>
+<Config>
+    <LoginServer>
+        <IP>127.0.0.1</IP>
+        <Port>7000</Port>
+    </LoginServer>
+    <GameServer>
+        <IP>127.0.0.1</IP>
+        <Port>7001</Port>
+    </GameServer>
+</Config>
+"@
+
+if (-not (Test-Path "Config/serverinfo_dev.xml")) {
+    $ServerInfo | Out-File -FilePath "Config/serverinfo_dev.xml" -Encoding UTF8
+    Write-Success "Created serverinfo_dev.xml"
+} else {
+    Write-Info "serverinfo_dev.xml already exists"
+}
+
+# ===== STEP 5: Launch Servers =====
+if (-not $ClientOnly) {
+    Write-Info "STEP 5: Launching Servers..."
+    
+    # ค้นหา server executables
+    $LoginServerExe = Get-ChildItem -Path "." -Filter "*Login*.exe" -Recurse | Select-Object -First 1
+    $GameServerExe = Get-ChildItem -Path "." -Filter "*Field*.exe" -Recurse | Select-Object -First 1
+    
+    if ($LoginServerExe) {
+        Write-Info "Starting Login Server: $($LoginServerExe.FullName)"
+        Start-Process -FilePath $LoginServerExe.FullName -RedirectStandardOutput "$LOG_DIR/LoginServer_stdout.log" -RedirectStandardError "$LOG_DIR/LoginServer_stderr.log"
+        Write-Success "Login Server started"
+        Start-Sleep -Seconds 3
+    } else {
+        Write-Warning-Custom "Login Server executable not found"
+    }
+    
+    if ($GameServerExe) {
+        Write-Info "Starting Game Server: $($GameServerExe.FullName)"
+        Start-Process -FilePath $GameServerExe.FullName -RedirectStandardOutput "$LOG_DIR/GameServer_stdout.log" -RedirectStandardError "$LOG_DIR/GameServer_stderr.log"
+        Write-Success "Game Server started"
+        Start-Sleep -Seconds 3
+    } else {
+        Write-Warning-Custom "Game Server executable not found"
+    }
+}
+
+# ===== STEP 6: Launch Client =====
+if (-not $ServerOnly) {
+    Write-Info "STEP 6: Launching Game Client..."
+    
+    $ClientExe = Get-ChildItem -Path "." -Filter "*Game*.exe" -Recurse | Where-Object { $_.Name -like "*Client*" -or $_.Directory.Name -like "*Client*" } | Select-Object -First 1
+    
+    if (-not $ClientExe) {
+        $ClientExe = Get-ChildItem -Path "[Client]__Game" -Filter "Game.exe" -Recurse | Select-Object -First 1
+    }
+    
+    if ($ClientExe) {
+        Write-Info "Starting Client: $($ClientExe.FullName)"
+        Start-Process -FilePath $ClientExe.FullName
+        Write-Success "Game Client started"
+    } else {
+        Write-Warning-Custom "Game Client executable not found"
+        Write-Info "Build the project first or check for Game.exe"
+    }
+}
+
+# ===== Completion =====
+Write-Success "=========================================="
+Write-Success "RAN Online Developer Environment Ready!"
+Write-Success "=========================================="
+
+Write-Info "Server Configuration:"
+Write-Info "  Login Server:  127.0.0.1:7000"
+Write-Info "  Game Server:   127.0.0.1:7001"
+Write-Info "  Database:      ran_game_dev"
+Write-Info ""
+Write-Info "Test Accounts (if seeded):"
+Write-Info "  Username: devgm        Password: dev1234  (GM)"
+Write-Info "  Username: testuser     Password: dev1234  (Normal)"
+Write-Info ""
+Write-Info "Log Files: $LOG_DIR"
+Write-Info ""
+
+# รักษา window open
+Read-Host "Press Enter to exit"
